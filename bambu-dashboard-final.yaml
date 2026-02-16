@@ -1,0 +1,1142 @@
+esphome:
+  name: bambu-dashboard
+  friendly_name: Bambu Lab Dashboard
+
+esp32:
+  board: esp32-s3-devkitc-1
+  framework:
+    type: esp-idf
+  variant: esp32s3
+
+logger:
+  level: INFO
+
+api:
+
+ota:
+  - platform: esphome
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+time:
+  - platform: homeassistant
+    id: ha_time
+    timezone: America/New_York
+    on_time_sync:
+      then:
+        - lvgl.label.update:
+            id: temps_time_label
+            text: !lambda |-
+              static char time_str[12];
+              auto time = id(ha_time).now();
+              int hour = time.hour;
+              const char* period = "AM";
+              if (hour >= 12) {
+                period = "PM";
+                if (hour > 12) hour -= 12;
+              }
+              if (hour == 0) hour = 12;
+              snprintf(time_str, sizeof(time_str), "%d:%02d %s", hour, time.minute, period);
+              return time_str;
+    on_time:
+      - seconds: 0
+        then:
+          - lvgl.label.update:
+              id: temps_time_label
+              text: !lambda |-
+                static char time_str[12];
+                auto time = id(ha_time).now();
+                int hour = time.hour;
+                const char* period = "AM";
+                if (hour >= 12) {
+                  period = "PM";
+                  if (hour > 12) hour -= 12;
+                }
+                if (hour == 0) hour = 12;
+                snprintf(time_str, sizeof(time_str), "%d:%02d %s", hour, time.minute, period);
+                return time_str;
+
+psram:
+  mode: quad
+  speed: 80MHz
+
+spi:
+  - id: spi_bus
+    clk_pin: GPIO10
+    mosi_pin: GPIO11
+    miso_pin: GPIO12
+
+i2c:
+  id: i2c_bus
+  sda: GPIO6
+  scl: GPIO7
+  scan: true
+
+touchscreen:
+  - platform: cst816
+    id: touch_screen
+    interrupt_pin: GPIO5
+    reset_pin: GPIO13
+    i2c_id: i2c_bus
+
+display:
+  - platform: ili9xxx
+    model: gc9a01a
+    id: round_display
+    spi_id: spi_bus
+    cs_pin: GPIO9
+    dc_pin: GPIO8
+    reset_pin: GPIO14
+    rotation: 0
+    invert_colors: true
+    auto_clear_enabled: false
+    update_interval: never
+
+output:
+  - platform: ledc
+    pin: GPIO2
+    id: backlight_pwm
+    frequency: 1000Hz
+
+light:
+  - platform: monochromatic
+    output: backlight_pwm
+    name: "Display Backlight"
+    id: display_backlight
+    restore_mode: RESTORE_DEFAULT_ON
+
+# Brightness control
+number:
+  - platform: template
+    name: "Display Brightness"
+    id: brightness_control
+    min_value: 10
+    max_value: 100
+    step: 10
+    initial_value: 40
+    optimistic: true
+    on_value:
+      then:
+        - light.turn_on:
+            id: display_backlight
+            brightness: !lambda return x / 100.0;
+        - lvgl.label.update:
+            id: brightness_label
+            text: !lambda |-
+              static char buf[10];
+              snprintf(buf, sizeof(buf), "%d%%", (int)x);
+              return buf;
+
+sensor:
+  - platform: homeassistant
+    id: print_progress
+    entity_id: sensor.YOUR_PRINTER_ENTITY_print_progress
+    on_value:
+      then:
+        # Update all three arc values
+        - lvgl.arc.update:
+            id: progress_arc_white
+            value: !lambda return x;
+        - lvgl.arc.update:
+            id: progress_arc_green
+            value: !lambda return x;
+        - lvgl.arc.update:
+            id: progress_arc_blue
+            value: !lambda return x;
+        # Show/hide appropriate arc based on progress and bed temp
+        - if:
+            condition:
+              lambda: return x >= 100;
+            then:
+              # 100% complete - hide white, check bed temp for green vs blue
+              - lvgl.widget.hide: progress_arc_white
+              - if:
+                  condition:
+                    lambda: return id(bed_temp).state < 46;
+                  then:
+                    # Cooled - show blue
+                    - lvgl.widget.hide: progress_arc_green
+                    - lvgl.widget.show: progress_arc_blue
+                  else:
+                    # Still hot - show green
+                    - lvgl.widget.hide: progress_arc_blue
+                    - lvgl.widget.show: progress_arc_green
+            else:
+              # Printing - show white
+              - lvgl.widget.show: progress_arc_white
+              - lvgl.widget.hide: progress_arc_green
+              - lvgl.widget.hide: progress_arc_blue
+        - lvgl.label.update:
+            id: progress_label
+            text: !lambda |-
+              static char buf[10];
+              snprintf(buf, sizeof(buf), "%.0f%%", x);
+              return buf;
+            
+  - platform: homeassistant
+    id: chamber_temp
+    entity_id: sensor.YOUR_PRINTER_ENTITY_chamber_temperature
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: chamber_label
+            text: !lambda |-
+              static char buf[10];
+              snprintf(buf, sizeof(buf), "%.0f°", x);
+              return buf;
+              
+  - platform: homeassistant
+    id: nozzle_temp
+    entity_id: sensor.YOUR_PRINTER_ENTITY_nozzle_temperature
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: nozzle_label
+            text: !lambda |-
+              static char buf[10];
+              snprintf(buf, sizeof(buf), "%.0f°", x);
+              return buf;
+              
+  - platform: homeassistant
+    id: bed_temp
+    entity_id: sensor.YOUR_PRINTER_ENTITY_bed_temperature
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: bed_label
+            text: !lambda |-
+              static char buf[10];
+              snprintf(buf, sizeof(buf), "%.0f°", x);
+              return buf;
+        # If at 100%, update arc color based on bed temp
+        - if:
+            condition:
+              lambda: return id(print_progress).state >= 100;
+            then:
+              - if:
+                  condition:
+                    lambda: return x < 46;
+                  then:
+                    # Cooled - show blue
+                    - lvgl.widget.hide: progress_arc_green
+                    - lvgl.widget.show: progress_arc_blue
+                  else:
+                    # Still hot - show green
+                    - lvgl.widget.hide: progress_arc_blue
+                    - lvgl.widget.show: progress_arc_green
+            
+  - platform: homeassistant
+    id: current_layer
+    entity_id: sensor.YOUR_PRINTER_ENTITY_current_layer
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: layer_label
+            text: !lambda |-
+              static char buf[20];
+              snprintf(buf, sizeof(buf), "%d/%d", (int)x, (int)id(total_layers).state);
+              return buf;
+    
+  - platform: homeassistant
+    id: total_layers
+    entity_id: sensor.YOUR_PRINTER_ENTITY_total_layer_count
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: layer_label
+            text: !lambda |-
+              static char buf[20];
+              snprintf(buf, sizeof(buf), "%d/%d", (int)id(current_layer).state, (int)x);
+              return buf;
+              
+  - platform: homeassistant
+    id: remaining_time
+    entity_id: sensor.YOUR_PRINTER_ENTITY_remaining_time
+    on_value:
+      then:
+        - logger.log:
+            format: "Remaining time (hours): %.4f"
+            args: ['x']
+        - lvgl.label.update:
+            id: time_label
+            text: !lambda |-
+              // Sensor sends hours as decimal, convert to minutes
+              if (isnan(x) || x <= 0) {
+                ESP_LOGD("remaining_time", "No time or invalid");
+                return "--";
+              }
+              
+              int total_minutes = (int)(x * 60);  // Convert hours to minutes
+              ESP_LOGD("remaining_time", "Hours: %.4f, Minutes: %d", x, total_minutes);
+              
+              static char buf[30];
+              if (total_minutes > 60) {
+                int hours = total_minutes / 60;
+                int mins = total_minutes % 60;
+                snprintf(buf, sizeof(buf), "%dh %dm left", hours, mins);
+              } else {
+                snprintf(buf, sizeof(buf), "%dm left", total_minutes);
+              }
+              ESP_LOGD("remaining_time", "Displaying: %s", buf);
+              return buf;
+              
+  - platform: homeassistant
+    id: ams_humidity
+    entity_id: sensor.YOUR_PRINTER_ENTITY_ams_1_humidity
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: ams_humidity_label
+            text: !lambda |-
+              static char buf[10];
+              snprintf(buf, sizeof(buf), "%.0f%%", x);
+              return buf;
+              
+  - platform: homeassistant
+    id: ams_temp
+    entity_id: sensor.YOUR_PRINTER_ENTITY_ams_1_temperature
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: ams_temp_label
+            text: !lambda |-
+              static char buf[10];
+              snprintf(buf, sizeof(buf), "%.0f°", x);
+              return buf;
+
+text_sensor:
+  - platform: homeassistant
+    id: print_status
+    entity_id: sensor.YOUR_PRINTER_ENTITY_print_status
+    on_value:
+      then:
+        - lambda: |-
+            std::string status_l = x;
+            std::transform(status_l.begin(), status_l.end(), status_l.begin(), ::tolower);
+            ESP_LOGD("print_status", "Status: %s", status_l.c_str());
+        # Auto-switch to progress page when printing starts
+        - if:
+            condition:
+              lambda: |-
+                std::string status_l = x;
+                std::transform(status_l.begin(), status_l.end(), status_l.begin(), ::tolower);
+                return (status_l == "running" || status_l == "prepare");
+            then:
+              - lvgl.page.show: page_progress
+            
+  - platform: homeassistant
+    id: current_stage
+    entity_id: sensor.YOUR_PRINTER_ENTITY_current_stage
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: stage_label
+            text: !lambda |-
+              std::string stage = x;
+              if (stage.empty()) return "Idle";
+              
+              // Convert to title case
+              bool capitalize_next = true;
+              for (size_t i = 0; i < stage.length(); i++) {
+                if (capitalize_next && isalpha(stage[i])) {
+                  stage[i] = toupper(stage[i]);
+                  capitalize_next = false;
+                } else if (stage[i] == ' ' || stage[i] == '_') {
+                  capitalize_next = true;
+                  if (stage[i] == '_') stage[i] = ' ';  // Replace underscores with spaces
+                } else {
+                  stage[i] = tolower(stage[i]);
+                }
+              }
+              return stage.c_str();
+            
+  # AMS Tray filament types
+  - platform: homeassistant
+    id: ams_tray_1
+    entity_id: sensor.YOUR_PRINTER_ENTITY_ams_1_tray_1
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: ams_slot_1_label
+            text: !lambda |-
+              std::string val = x;
+              if (val.find("Generic ") == 0) {
+                val = val.substr(8);  // Remove "Generic "
+              }
+              return val.c_str();
+              
+  - platform: homeassistant
+    id: ams_tray_2
+    entity_id: sensor.YOUR_PRINTER_ENTITY_ams_1_tray_2
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: ams_slot_2_label
+            text: !lambda |-
+              std::string val = x;
+              if (val.find("Generic ") == 0) {
+                val = val.substr(8);
+              }
+              return val.c_str();
+              
+  - platform: homeassistant
+    id: ams_tray_3
+    entity_id: sensor.YOUR_PRINTER_ENTITY_ams_1_tray_3
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: ams_slot_3_label
+            text: !lambda |-
+              std::string val = x;
+              if (val.find("Generic ") == 0) {
+                val = val.substr(8);
+              }
+              return val.c_str();
+              
+  - platform: homeassistant
+    id: ams_tray_4
+    entity_id: sensor.YOUR_PRINTER_ENTITY_ams_1_tray_4
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: ams_slot_4_label
+            text: !lambda |-
+              std::string val = x;
+              if (val.find("Generic ") == 0) {
+                val = val.substr(8);
+              }
+              return val.c_str();
+
+  # AMS Tray colors - using attribute sensors
+  - platform: homeassistant
+    id: ams_tray_1_color
+    entity_id: sensor.YOUR_PRINTER_ENTITY_ams_1_tray_1
+    attribute: color
+    on_value:
+      then:
+        - lambda: |-
+            ESP_LOGD("ams_color", "Tray 1 color attribute: %s", x.c_str());
+            std::string color_str = x;
+            if (color_str.empty() || color_str == "unknown") {
+              return;
+            }
+            if (color_str[0] == '#') {
+              color_str = color_str.substr(1);
+            }
+            // Strip alpha channel if present (take only first 6 hex chars = RGB)
+            if (color_str.length() > 6) {
+              color_str = color_str.substr(0, 6);
+            }
+            unsigned long color_val = strtoul(color_str.c_str(), NULL, 16);
+            
+            // Extract RGB for brightness calculation
+            int r = (color_val >> 16) & 0xFF;
+            int g = (color_val >> 8) & 0xFF;
+            int b = color_val & 0xFF;
+            int brightness = (r + g + b) / 3;
+            
+            ESP_LOGD("ams_color", "Tray 1 Color: %s RGB: R=%d G=%d B=%d (0x%06X), Brightness=%d", 
+                     x.c_str(), r, g, b, (unsigned int)color_val, brightness);
+            
+            // Use EXACT color from Home Assistant
+            auto obj = id(ams_slot_1_box);
+            lv_obj_set_style_bg_color(obj, lv_color_hex(color_val), LV_PART_MAIN);
+            
+            // Update text color based on brightness
+            auto label = id(ams_slot_1_label);
+            if (brightness > 200) {
+              lv_obj_set_style_text_color(label, lv_color_hex(0x666666), LV_PART_MAIN);  // Gray
+            } else {
+              lv_obj_set_style_text_color(label, lv_color_hex(0xFFFFFF), LV_PART_MAIN);  // White
+            }
+            
+  - platform: homeassistant
+    id: ams_tray_2_color
+    entity_id: sensor.YOUR_PRINTER_ENTITY_ams_1_tray_2
+    attribute: color
+    on_value:
+      then:
+        - lambda: |-
+            std::string color_str = x;
+            if (color_str.empty() || color_str == "unknown") return;
+            if (color_str[0] == '#') color_str = color_str.substr(1);
+            // Strip alpha channel
+            if (color_str.length() > 6) color_str = color_str.substr(0, 6);
+            unsigned long color_val = strtoul(color_str.c_str(), NULL, 16);
+            
+            int r = (color_val >> 16) & 0xFF;
+            int g = (color_val >> 8) & 0xFF;
+            int b = color_val & 0xFF;
+            int brightness = (r + g + b) / 3;
+            
+            auto obj = id(ams_slot_2_box);
+            lv_obj_set_style_bg_color(obj, lv_color_hex(color_val), LV_PART_MAIN);
+            
+            auto label = id(ams_slot_2_label);
+            if (brightness > 200) {
+              lv_obj_set_style_text_color(label, lv_color_hex(0x666666), LV_PART_MAIN);
+            } else {
+              lv_obj_set_style_text_color(label, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
+            }
+            
+  - platform: homeassistant
+    id: ams_tray_3_color
+    entity_id: sensor.YOUR_PRINTER_ENTITY_ams_1_tray_3
+    attribute: color
+    on_value:
+      then:
+        - lambda: |-
+            std::string color_str = x;
+            if (color_str.empty() || color_str == "unknown") return;
+            if (color_str[0] == '#') color_str = color_str.substr(1);
+            // Strip alpha channel
+            if (color_str.length() > 6) color_str = color_str.substr(0, 6);
+            unsigned long color_val = strtoul(color_str.c_str(), NULL, 16);
+            
+            int r = (color_val >> 16) & 0xFF;
+            int g = (color_val >> 8) & 0xFF;
+            int b = color_val & 0xFF;
+            int brightness = (r + g + b) / 3;
+            
+            auto obj = id(ams_slot_3_box);
+            lv_obj_set_style_bg_color(obj, lv_color_hex(color_val), LV_PART_MAIN);
+            
+            auto label = id(ams_slot_3_label);
+            if (brightness > 200) {
+              lv_obj_set_style_text_color(label, lv_color_hex(0x666666), LV_PART_MAIN);
+            } else {
+              lv_obj_set_style_text_color(label, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
+            }
+            
+  - platform: homeassistant
+    id: ams_tray_4_color
+    entity_id: sensor.YOUR_PRINTER_ENTITY_ams_1_tray_4
+    attribute: color
+    on_value:
+      then:
+        - lambda: |-
+            std::string color_str = x;
+            if (color_str.empty() || color_str == "unknown") return;
+            if (color_str[0] == '#') color_str = color_str.substr(1);
+            // Strip alpha channel
+            if (color_str.length() > 6) color_str = color_str.substr(0, 6);
+            unsigned long color_val = strtoul(color_str.c_str(), NULL, 16);
+            
+            int r = (color_val >> 16) & 0xFF;
+            int g = (color_val >> 8) & 0xFF;
+            int b = color_val & 0xFF;
+            int brightness = (r + g + b) / 3;
+            
+            auto obj = id(ams_slot_4_box);
+            lv_obj_set_style_bg_color(obj, lv_color_hex(color_val), LV_PART_MAIN);
+            
+            auto label = id(ams_slot_4_label);
+            if (brightness > 200) {
+              lv_obj_set_style_text_color(label, lv_color_hex(0x666666), LV_PART_MAIN);
+            } else {
+              lv_obj_set_style_text_color(label, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
+            }
+
+color:
+  - id: color_background
+    hex: '000000'
+  - id: color_primary
+    hex: '4A90E2'
+  - id: color_text_primary
+    hex: 'FFFFFF'
+  - id: color_text_secondary
+    hex: 'A0A0A0'
+  - id: color_arc_bg
+    hex: '1A1A1A'
+
+font:
+  - file: "gfonts://Roboto@700"
+    id: font_large
+    size: 48
+  - file: "gfonts://Roboto@500"
+    id: font_title
+    size: 22
+  - file: "gfonts://Roboto@500"
+    id: font_medium
+    size: 18
+  - file: "gfonts://Roboto@300"
+    id: font_small
+    size: 14
+  - file: https://github.com/Templarian/MaterialDesign-Webfont/raw/master/fonts/materialdesignicons-webfont.ttf
+    id: icons_40
+    size: 40
+    glyphs: [
+      "\U000F1487",  # mdi-printer-3d (chamber)
+      "\U000F0E5B",  # mdi-printer-3d-nozzle-outline (hotend)
+      "\U000F08A4",  # mdi-bed-queen-outline (bed)
+    ]
+
+lvgl:
+  id: lvgl_id
+  log_level: INFO
+  color_depth: 16
+  bg_color: 0
+  touchscreens:
+    - touchscreen_id: touch_screen
+  displays:
+    - round_display
+  page_wrap: true
+  pages:
+    - id: page_temps
+      widgets:
+        - obj:
+            x: 2
+            width: 238
+            height: 240
+            bg_color: 0
+            bg_opa: COVER
+            border_width: 0
+            pad_all: 0
+            scrollbar_mode: "OFF"
+            widgets:
+              # Left swipe zone - previous page
+              - obj:
+                  x: 0
+                  y: 0
+                  width: 120
+                  height: 240
+                  bg_opa: TRANSP
+                  border_width: 0
+                  clickable: true
+                  on_press:
+                    - lvgl.page.previous:
+              # Right swipe zone - next page
+              - obj:
+                  x: 120
+                  y: 0
+                  width: 120
+                  height: 240
+                  bg_opa: TRANSP
+                  border_width: 0
+                  clickable: true
+                  on_press:
+                    - lvgl.page.next:
+              
+              # BED CARD - Blue
+              - obj:
+                  align: CENTER
+                  x: -70
+                  y: 0
+                  width: 60
+                  height: 120
+                  bg_color: 0x2196F3
+                  bg_opa: COVER
+                  border_width: 0
+                  radius: 8
+                  scrollbar_mode: "OFF"
+                  widgets:
+                    # Bed icon
+                    - label:
+                        align: CENTER
+                        y: -35
+                        text: "\U000F08A4"
+                        text_font: icons_40
+                        text_color: 0xFFFFFF
+                    - label:
+                        align: CENTER
+                        y: 10
+                        text: "Bed"
+                        text_font: font_small
+                        text_color: 0xFFFFFF
+                    - label:
+                        id: bed_label
+                        align: CENTER
+                        y: 40
+                        text_font: font_title
+                        text_color: 0xFFFFFF
+                        text: "--"
+              
+              # HOTEND CARD - Red
+              - obj:
+                  align: CENTER
+                  x: 0
+                  y: 0
+                  width: 60
+                  height: 120
+                  bg_color: 0xF44336
+                  bg_opa: COVER
+                  border_width: 0
+                  radius: 8
+                  scrollbar_mode: "OFF"
+                  widgets:
+                    # Hotend icon
+                    - label:
+                        align: CENTER
+                        y: -35
+                        text: "\U000F0E5B"
+                        text_font: icons_40
+                        text_color: 0xFFFFFF
+                    - label:
+                        align: CENTER
+                        y: 10
+                        text: "Hotend"
+                        text_font: font_small
+                        text_color: 0xFFFFFF
+                    - label:
+                        id: nozzle_label
+                        align: CENTER
+                        y: 40
+                        text_font: font_title
+                        text_color: 0xFFFFFF
+                        text: "--"
+              
+              # CHAMBER CARD - Green
+              - obj:
+                  align: CENTER
+                  x: 70
+                  y: 0
+                  width: 60
+                  height: 120
+                  bg_color: 0x4CAF50
+                  bg_opa: COVER
+                  border_width: 0
+                  radius: 8
+                  scrollbar_mode: "OFF"
+                  widgets:
+                    # Chamber icon
+                    - label:
+                        align: CENTER
+                        y: -35
+                        text: "\U000F1487"
+                        text_font: icons_40
+                        text_color: 0xFFFFFF
+                    - label:
+                        align: CENTER
+                        y: 10
+                        text: "Chamber"
+                        text_font: font_small
+                        text_color: 0xFFFFFF
+                    - label:
+                        id: chamber_label
+                        align: CENTER
+                        y: 40
+                        text_font: font_title
+                        text_color: 0xFFFFFF
+                        text: "--"
+              
+              # TIME DISPLAY PILL
+              - obj:
+                  align: CENTER
+                  x: 0
+                  y: 85
+                  width: 110
+                  height: 32
+                  bg_color: 0xFFFFFF
+                  bg_opa: COVER
+                  border_width: 0
+                  radius: 16
+                  scrollbar_mode: "OFF"
+                  widgets:
+                    - label:
+                        id: temps_time_label
+                        align: CENTER
+                        text_font: font_medium
+                        text_color: 0x000000
+                        text: "12:00 AM"
+    
+    - id: page_progress
+      widgets:
+        - obj:
+            x: 2
+            width: 238
+            height: 240
+            bg_color: 0
+            bg_opa: COVER
+            border_width: 0
+            scrollbar_mode: "OFF"
+            widgets:
+              # Left swipe zone - previous page
+              - obj:
+                  x: 0
+                  y: 0
+                  width: 120
+                  height: 240
+                  bg_opa: TRANSP
+                  border_width: 0
+                  clickable: true
+                  on_press:
+                    - lvgl.page.previous:
+              # Right swipe zone - next page
+              - obj:
+                  x: 120
+                  y: 0
+                  width: 120
+                  height: 240
+                  bg_opa: TRANSP
+                  border_width: 0
+                  clickable: true
+                  on_press:
+                    - lvgl.page.next:
+              # Background arc - gray track (indicator hidden, only shows background)
+              - arc:
+                  id: progress_arc_bg
+                  align: CENTER
+                  y: -5
+                  height: 200
+                  width: 200
+                  value: 0
+                  start_angle: 135
+                  end_angle: 45
+                  rotation: 0
+                  arc_color: 0x333333
+                  arc_width: 18
+                  arc_rounded: true
+                  adjustable: false
+                  bg_opa: TRANSP
+              # Progress arc - dynamic color
+              # White arc for printing (< 100%)
+              - arc:
+                  id: progress_arc_white
+                  align: CENTER
+                  y: -5
+                  height: 200
+                  width: 200
+                  value: 0
+                  start_angle: 135
+                  end_angle: 45
+                  rotation: 0
+                  arc_color: 0xFFFFFF
+                  arc_width: 18
+                  arc_rounded: true
+                  adjustable: false
+                  bg_opa: TRANSP
+              # Green arc for 100% complete (bed still hot >= 46)
+              - arc:
+                  id: progress_arc_green
+                  align: CENTER
+                  y: -5
+                  height: 200
+                  width: 200
+                  value: 0
+                  start_angle: 135
+                  end_angle: 45
+                  rotation: 0
+                  arc_color: 0x00bb2c
+                  arc_width: 18
+                  arc_rounded: true
+                  adjustable: false
+                  bg_opa: TRANSP
+                  hidden: true
+              # Blue arc for 100% complete (bed cooled < 46)
+              - arc:
+                  id: progress_arc_blue
+                  align: CENTER
+                  y: -5
+                  height: 200
+                  width: 200
+                  value: 0
+                  start_angle: 135
+                  end_angle: 45
+                  rotation: 0
+                  arc_color: 0x4A90E2
+                  arc_width: 18
+                  arc_rounded: true
+                  adjustable: false
+                  bg_opa: TRANSP
+                  hidden: true
+              - label:
+                  id: progress_label
+                  align: CENTER
+                  y: -20
+                  text_font: font_large
+                  text_color: 0xFFFFFF
+                  text: "0%"
+              - label:
+                  id: stage_label
+                  align: CENTER
+                  y: 30
+                  text_font: font_small
+                  text_color: color_text_secondary
+                  text: "Idle"
+              - label:
+                  id: time_label
+                  align: CENTER
+                  y: 50
+                  text_font: font_small
+                  text_color: color_text_secondary
+                  text: "--"
+              - label:
+                  id: layer_label
+                  align: CENTER
+                  y: 70
+                  text_font: font_medium
+                  text_color: color_text_primary
+                  text: "0/0"
+    
+    - id: page_ams
+      widgets:
+        - obj:
+            x: 2
+            width: 238
+            height: 240
+            bg_color: 0
+            bg_opa: COVER
+            border_width: 0
+            scrollbar_mode: "OFF"
+            widgets:
+              # Left swipe zone - previous page
+              - obj:
+                  x: 0
+                  y: 0
+                  width: 120
+                  height: 240
+                  bg_opa: TRANSP
+                  border_width: 0
+                  clickable: true
+                  on_press:
+                    - lvgl.page.previous:
+              # Right swipe zone - next page
+              - obj:
+                  x: 120
+                  y: 0
+                  width: 120
+                  height: 240
+                  bg_opa: TRANSP
+                  border_width: 0
+                  clickable: true
+                  on_press:
+                    - lvgl.page.next:
+              - label:
+                  align: CENTER
+                  y: -75
+                  text: "AMS 2 Pro"
+                  text_font: font_title
+                  text_color: color_text_primary
+              - label:
+                  align: CENTER
+                  x: -50
+                  y: -40
+                  text: "Humidity"
+                  text_font: font_small
+                  text_color: color_text_secondary
+              - label:
+                  id: ams_humidity_label
+                  align: CENTER
+                  x: -50
+                  y: -20
+                  text_font: font_title
+                  text_color: color_text_primary
+                  text: "--"
+              - label:
+                  align: CENTER
+                  x: 50
+                  y: -40
+                  text: "Temp"
+                  text_font: font_small
+                  text_color: color_text_secondary
+              - label:
+                  id: ams_temp_label
+                  align: CENTER
+                  x: 50
+                  y: -20
+                  text_font: font_title
+                  text_color: color_text_primary
+                  text: "--"
+              # Slot 1
+              - obj:
+                  id: ams_slot_1_box
+                  align: CENTER
+                  x: -66
+                  y: 50
+                  width: 40
+                  height: 55
+                  bg_color: 0x1A1A1A
+                  bg_opa: COVER
+                  border_width: 1
+                  border_color: 0x666666
+                  radius: 4
+                  scrollbar_mode: "OFF"
+                  widgets:
+                    - label:
+                        id: ams_slot_1_label
+                        align: CENTER
+                        text: ""
+                        text_font: font_small
+                        text_color: 0xFFFFFF
+                        text_align: CENTER
+              # Slot 2
+              - obj:
+                  id: ams_slot_2_box
+                  align: CENTER
+                  x: -22
+                  y: 50
+                  width: 40
+                  height: 55
+                  bg_color: 0x1A1A1A
+                  bg_opa: COVER
+                  border_width: 1
+                  border_color: 0x666666
+                  radius: 4
+                  scrollbar_mode: "OFF"
+                  widgets:
+                    - label:
+                        id: ams_slot_2_label
+                        align: CENTER
+                        text: ""
+                        text_font: font_small
+                        text_color: 0xFFFFFF
+                        text_align: CENTER
+              # Slot 3
+              - obj:
+                  id: ams_slot_3_box
+                  align: CENTER
+                  x: 22
+                  y: 50
+                  width: 40
+                  height: 55
+                  bg_color: 0x1A1A1A
+                  bg_opa: COVER
+                  border_width: 1
+                  border_color: 0x666666
+                  radius: 4
+                  scrollbar_mode: "OFF"
+                  widgets:
+                    - label:
+                        id: ams_slot_3_label
+                        align: CENTER
+                        text: ""
+                        text_font: font_small
+                        text_color: 0xFFFFFF
+                        text_align: CENTER
+              # Slot 4
+              - obj:
+                  id: ams_slot_4_box
+                  align: CENTER
+                  x: 66
+                  y: 50
+                  width: 40
+                  height: 55
+                  bg_color: 0x1A1A1A
+                  bg_opa: COVER
+                  border_width: 1
+                  border_color: 0x666666
+                  radius: 4
+                  scrollbar_mode: "OFF"
+                  widgets:
+                    - label:
+                        id: ams_slot_4_label
+                        align: CENTER
+                        text: ""
+                        text_font: font_small
+                        text_color: 0xFFFFFF
+                        text_align: CENTER
+    
+    - id: page_brightness
+      widgets:
+        - obj:
+            x: 2
+            width: 238
+            height: 240
+            bg_color: 0
+            bg_opa: COVER
+            border_width: 0
+            scrollbar_mode: "OFF"
+            widgets:
+              # Left swipe zone - TOP HALF ONLY (avoid buttons)
+              - obj:
+                  x: 0
+                  y: 0
+                  width: 120
+                  height: 100
+                  bg_opa: TRANSP
+                  border_width: 0
+                  clickable: true
+                  on_press:
+                    - lvgl.page.previous:
+              # Right swipe zone - TOP HALF ONLY (avoid buttons)
+              - obj:
+                  x: 120
+                  y: 0
+                  width: 120
+                  height: 100
+                  bg_opa: TRANSP
+                  border_width: 0
+                  clickable: true
+                  on_press:
+                    - lvgl.page.next:
+              # Left swipe zone - BOTTOM (below buttons)
+              - obj:
+                  x: 0
+                  y: 140
+                  width: 120
+                  height: 100
+                  bg_opa: TRANSP
+                  border_width: 0
+                  clickable: true
+                  on_press:
+                    - lvgl.page.previous:
+              # Right swipe zone - BOTTOM (below buttons)
+              - obj:
+                  x: 120
+                  y: 140
+                  width: 120
+                  height: 100
+                  bg_opa: TRANSP
+                  border_width: 0
+                  clickable: true
+                  on_press:
+                    - lvgl.page.next:
+              - label:
+                  align: CENTER
+                  y: -80
+                  text: "Brightness"
+                  text_font: font_title
+                  text_color: color_text_primary
+              - label:
+                  id: brightness_label
+                  align: CENTER
+                  y: -40
+                  text: "40%"
+                  text_font: font_large
+                  text_color: 0x4A90E2
+              # Minus button
+              - obj:
+                  align: CENTER
+                  x: -50
+                  y: 40
+                  width: 60
+                  height: 60
+                  bg_color: 0x333333
+                  bg_opa: COVER
+                  border_width: 2
+                  border_color: 0x666666
+                  radius: 30
+                  clickable: true
+                  scrollbar_mode: "OFF"
+                  on_press:
+                    - number.decrement: brightness_control
+                  widgets:
+                    - label:
+                        align: CENTER
+                        text: "-"
+                        text_font: font_large
+                        text_color: 0xFFFFFF
+              # Plus button
+              - obj:
+                  align: CENTER
+                  x: 50
+                  y: 40
+                  width: 60
+                  height: 60
+                  bg_color: 0x333333
+                  bg_opa: COVER
+                  border_width: 2
+                  border_color: 0x666666
+                  radius: 30
+                  clickable: true
+                  scrollbar_mode: "OFF"
+                  on_press:
+                    - number.increment: brightness_control
+                  widgets:
+                    - label:
+                        align: CENTER
+                        text: "+"
+                        text_font: font_large
+                        text_color: 0xFFFFFF
