@@ -102,16 +102,6 @@ lambda: return x < 46;  # Celsius
 | Wrong colors | Verify Bambu sends color attributes in HA |
 | Slow startup | Normal for first boot (30-60s), faster after |
 
-## Project Structure
-
-
-bambu-esp32-dashboard/
-├── README.md                 # You are here
-├── bambu-dashboard-final.yaml      # ESPHome configuration
-├── images/                   # Documentation photos
-├── case/                     # 3D printable 3MF files
-└── docs/                     # Additional guides
-
 
 ## Technical Specs
 
