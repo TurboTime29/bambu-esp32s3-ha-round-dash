@@ -1,6 +1,13 @@
 esphome:
   name: bambu-dashboard
   friendly_name: Bambu Lab Dashboard
+  platformio_options:
+    board_build.flash_mode: dio
+
+# ROTATION DISABLED - Uncomment to re-enable
+# external_components:
+#   - source: github://dala318/esphome-qmi8658
+#     components: [qmi8658]
 
 esp32:
   board: esp32-s3-devkitc-1
@@ -10,8 +17,10 @@ esp32:
 
 logger:
   level: INFO
+  baud_rate: 0  # Disable UART logging for better performance
 
 api:
+  reboot_timeout: 0s  # Don't reboot on API disconnect
 
 ota:
   - platform: esphome
@@ -19,6 +28,9 @@ ota:
 wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
+  fast_connect: true  # Skip WiFi scan, connect faster
+  power_save_mode: none  # Better performance
+  reboot_timeout: 10min  # Don't reboot too quickly on disconnect
 
 time:
   - platform: homeassistant
@@ -132,42 +144,30 @@ number:
 sensor:
   - platform: homeassistant
     id: print_progress
-    entity_id: sensor.YOUR_PRINTER_ENTITY_print_progress
+    entity_id: sensor.p2s_22e8aj592301504_print_progress
+    filters:
+      - throttle: 2s  # Only update every 2 seconds max
     on_value:
       then:
-        # Update all three arc values
+        # Update arc value
         - lvgl.arc.update:
-            id: progress_arc_white
+            id: progress_arc
             value: !lambda return x;
-        - lvgl.arc.update:
-            id: progress_arc_green
-            value: !lambda return x;
-        - lvgl.arc.update:
-            id: progress_arc_blue
-            value: !lambda return x;
-        # Show/hide appropriate arc based on progress and bed temp
-        - if:
-            condition:
-              lambda: return x >= 100;
-            then:
-              # 100% complete - hide white, check bed temp for green vs blue
-              - lvgl.widget.hide: progress_arc_white
-              - if:
-                  condition:
-                    lambda: return id(bed_temp).state < 46;
-                  then:
-                    # Cooled - show blue
-                    - lvgl.widget.hide: progress_arc_green
-                    - lvgl.widget.show: progress_arc_blue
-                  else:
-                    # Still hot - show green
-                    - lvgl.widget.hide: progress_arc_blue
-                    - lvgl.widget.show: progress_arc_green
-            else:
-              # Printing - show white
-              - lvgl.widget.show: progress_arc_white
-              - lvgl.widget.hide: progress_arc_green
-              - lvgl.widget.hide: progress_arc_blue
+        # Update arc indicator color based on progress and bed temp
+        - lambda: |-
+            uint32_t color;
+            if (x >= 100) {
+              // 100% complete - check bed temp
+              if (id(bed_temp).has_state() && id(bed_temp).state < 46) {
+                color = 0x4A90E2;  // Blue - cooled
+              } else {
+                color = 0x00bb2c;  // Green - still hot
+              }
+            } else {
+              color = 0xFFFFFF;  // White - printing
+            }
+            auto arc = id(progress_arc);
+            lv_obj_set_style_arc_color(arc, lv_color_hex(color), LV_PART_INDICATOR);
         - lvgl.label.update:
             id: progress_label
             text: !lambda |-
@@ -177,7 +177,9 @@ sensor:
             
   - platform: homeassistant
     id: chamber_temp
-    entity_id: sensor.YOUR_PRINTER_ENTITY_chamber_temperature
+    entity_id: sensor.p2s_22e8aj592301504_chamber_temperature
+    filters:
+      - throttle: 3s  # Temp doesn't change fast
     on_value:
       then:
         - lvgl.label.update:
@@ -189,7 +191,9 @@ sensor:
               
   - platform: homeassistant
     id: nozzle_temp
-    entity_id: sensor.YOUR_PRINTER_ENTITY_nozzle_temperature
+    entity_id: sensor.p2s_22e8aj592301504_nozzle_temperature
+    filters:
+      - throttle: 3s  # Temp doesn't change fast
     on_value:
       then:
         - lvgl.label.update:
@@ -201,7 +205,9 @@ sensor:
               
   - platform: homeassistant
     id: bed_temp
-    entity_id: sensor.YOUR_PRINTER_ENTITY_bed_temperature
+    entity_id: sensor.p2s_22e8aj592301504_bed_temperature
+    filters:
+      - throttle: 3s  # Temp doesn't change fast
     on_value:
       then:
         - lvgl.label.update:
@@ -210,26 +216,27 @@ sensor:
               static char buf[10];
               snprintf(buf, sizeof(buf), "%.0f°", x);
               return buf;
-        # If at 100%, update arc color based on bed temp
+        # If at 100%, update arc color and stage label based on bed temp
         - if:
             condition:
-              lambda: return id(print_progress).state >= 100;
+              lambda: return id(print_progress).has_state() && id(print_progress).state >= 100;
             then:
-              - if:
-                  condition:
-                    lambda: return x < 46;
-                  then:
-                    # Cooled - show blue
-                    - lvgl.widget.hide: progress_arc_green
-                    - lvgl.widget.show: progress_arc_blue
-                  else:
-                    # Still hot - show green
-                    - lvgl.widget.hide: progress_arc_blue
-                    - lvgl.widget.show: progress_arc_green
+              - lambda: |-
+                  uint32_t color = (x < 46) ? 0x4A90E2 : 0x00bb2c;  // Blue if cool, green if hot
+                  auto arc = id(progress_arc);
+                  lv_obj_set_style_arc_color(arc, lv_color_hex(color), LV_PART_INDICATOR);
+              - lvgl.label.update:
+                  id: stage_label
+                  text: !lambda |-
+                    static char buf[20];
+                    snprintf(buf, sizeof(buf), "Bed: %.0f°", x);
+                    return buf;
             
   - platform: homeassistant
     id: current_layer
-    entity_id: sensor.YOUR_PRINTER_ENTITY_current_layer
+    entity_id: sensor.p2s_22e8aj592301504_current_layer
+    filters:
+      - throttle: 2s  # Layers change frequently during print
     on_value:
       then:
         - lvgl.label.update:
@@ -241,7 +248,9 @@ sensor:
     
   - platform: homeassistant
     id: total_layers
-    entity_id: sensor.YOUR_PRINTER_ENTITY_total_layer_count
+    entity_id: sensor.p2s_22e8aj592301504_total_layer_count
+    filters:
+      - throttle: 5s  # Total layers rarely changes
     on_value:
       then:
         - lvgl.label.update:
@@ -253,7 +262,9 @@ sensor:
               
   - platform: homeassistant
     id: remaining_time
-    entity_id: sensor.YOUR_PRINTER_ENTITY_remaining_time
+    entity_id: sensor.p2s_22e8aj592301504_remaining_time
+    filters:
+      - throttle: 5s  # Time estimate doesn't need frequent updates
     on_value:
       then:
         - logger.log:
@@ -284,7 +295,9 @@ sensor:
               
   - platform: homeassistant
     id: ams_humidity
-    entity_id: sensor.YOUR_PRINTER_ENTITY_ams_1_humidity
+    entity_id: sensor.p2s_22e8aj592301504_ams_1_humidity
+    filters:
+      - throttle: 10s  # Humidity changes very slowly
     on_value:
       then:
         - lvgl.label.update:
@@ -296,7 +309,9 @@ sensor:
               
   - platform: homeassistant
     id: ams_temp
-    entity_id: sensor.YOUR_PRINTER_ENTITY_ams_1_temperature
+    entity_id: sensor.p2s_22e8aj592301504_ams_1_temperature
+    filters:
+      - throttle: 10s  # AMS temp changes very slowly
     on_value:
       then:
         - lvgl.label.update:
@@ -306,10 +321,59 @@ sensor:
               snprintf(buf, sizeof(buf), "%.0f°", x);
               return buf;
 
+  # QMI8658 6-Axis IMU for gravity-based orientation
+  # TEMPORARILY DISABLED - Uncomment to re-enable rotation
+  # - platform: qmi8658
+  #   address: 0x6B
+  #   update_interval: 50ms
+  #   acceleration_x:
+  #     id: accel_x
+  #     internal: true
+  #     filters:
+  #       - sliding_window_moving_average:
+  #           window_size: 10
+  #   acceleration_y:
+  #     id: accel_y
+  #     internal: true
+  #     filters:
+  #       - sliding_window_moving_average:
+  #           window_size: 10
+  #   acceleration_z:
+  #     id: accel_z
+  #     internal: true
+  #     on_value:
+  #       then:
+  #         - lambda: |-
+  #             float accel_x_val = id(accel_x).state;
+  #             float accel_y_val = id(accel_y).state;
+  #             float accel_z_val = id(accel_z).state;
+  #             
+  #             // Don't rotate when laying flat
+  #             float tilt_magnitude = sqrt(accel_x_val*accel_x_val + accel_y_val*accel_y_val);
+  #             if (tilt_magnitude < 3.0) return;
+  #             
+  #             // Calculate angle
+  #             float angle_rad = atan2(accel_x_val, accel_y_val);
+  #             float angle_deg = angle_rad * 180.0 / 3.14159265359;
+  #             if (angle_deg < 0) angle_deg += 360.0;
+  #             
+  #             // Invert for upright content
+  #             int rotation_deg = (int)(360 - angle_deg) % 360;
+  #             
+  #             static int last_rotation = 0;
+  #             if (abs(rotation_deg - last_rotation) > 2) {
+  #               last_rotation = rotation_deg;
+  #               
+  #               lv_obj_t *scr = lv_disp_get_scr_act(lv_disp_get_default());
+  #               lv_obj_set_style_transform_angle(scr, rotation_deg * 10, 0);
+  #               lv_obj_set_style_transform_pivot_x(scr, 120, 0);
+  #               lv_obj_set_style_transform_pivot_y(scr, 120, 0);
+  #             }
+
 text_sensor:
   - platform: homeassistant
     id: print_status
-    entity_id: sensor.YOUR_PRINTER_ENTITY_print_status
+    entity_id: sensor.p2s_22e8aj592301504_print_status
     on_value:
       then:
         - lambda: |-
@@ -328,14 +392,25 @@ text_sensor:
             
   - platform: homeassistant
     id: current_stage
-    entity_id: sensor.YOUR_PRINTER_ENTITY_current_stage
+    entity_id: sensor.p2s_22e8aj592301504_current_stage
     on_value:
       then:
         - lvgl.label.update:
             id: stage_label
             text: !lambda |-
               std::string stage = x;
-              if (stage.empty()) return "Idle";
+              
+              // If stage is empty/Idle and print is at 100%, show bed temp instead
+              if (stage.empty() || stage == "idle" || stage == "Idle") {
+                if (id(print_progress).has_state() && id(print_progress).state >= 100) {
+                  if (id(bed_temp).has_state()) {
+                    static char buf[20];
+                    snprintf(buf, sizeof(buf), "Bed: %.0f°", id(bed_temp).state);
+                    return buf;
+                  }
+                }
+                return "Idle";
+              }
               
               // Convert to title case
               bool capitalize_next = true;
@@ -355,7 +430,7 @@ text_sensor:
   # AMS Tray filament types
   - platform: homeassistant
     id: ams_tray_1
-    entity_id: sensor.YOUR_PRINTER_ENTITY_ams_1_tray_1
+    entity_id: sensor.p2s_22e8aj592301504_ams_1_tray_1
     on_value:
       then:
         - lvgl.label.update:
@@ -369,7 +444,7 @@ text_sensor:
               
   - platform: homeassistant
     id: ams_tray_2
-    entity_id: sensor.YOUR_PRINTER_ENTITY_ams_1_tray_2
+    entity_id: sensor.p2s_22e8aj592301504_ams_1_tray_2
     on_value:
       then:
         - lvgl.label.update:
@@ -383,7 +458,7 @@ text_sensor:
               
   - platform: homeassistant
     id: ams_tray_3
-    entity_id: sensor.YOUR_PRINTER_ENTITY_ams_1_tray_3
+    entity_id: sensor.p2s_22e8aj592301504_ams_1_tray_3
     on_value:
       then:
         - lvgl.label.update:
@@ -397,7 +472,7 @@ text_sensor:
               
   - platform: homeassistant
     id: ams_tray_4
-    entity_id: sensor.YOUR_PRINTER_ENTITY_ams_1_tray_4
+    entity_id: sensor.p2s_22e8aj592301504_ams_1_tray_4
     on_value:
       then:
         - lvgl.label.update:
@@ -412,7 +487,7 @@ text_sensor:
   # AMS Tray colors - using attribute sensors
   - platform: homeassistant
     id: ams_tray_1_color
-    entity_id: sensor.YOUR_PRINTER_ENTITY_ams_1_tray_1
+    entity_id: sensor.p2s_22e8aj592301504_ams_1_tray_1
     attribute: color
     on_value:
       then:
@@ -454,7 +529,7 @@ text_sensor:
             
   - platform: homeassistant
     id: ams_tray_2_color
-    entity_id: sensor.YOUR_PRINTER_ENTITY_ams_1_tray_2
+    entity_id: sensor.p2s_22e8aj592301504_ams_1_tray_2
     attribute: color
     on_value:
       then:
@@ -483,7 +558,7 @@ text_sensor:
             
   - platform: homeassistant
     id: ams_tray_3_color
-    entity_id: sensor.YOUR_PRINTER_ENTITY_ams_1_tray_3
+    entity_id: sensor.p2s_22e8aj592301504_ams_1_tray_3
     attribute: color
     on_value:
       then:
@@ -512,7 +587,7 @@ text_sensor:
             
   - platform: homeassistant
     id: ams_tray_4_color
-    entity_id: sensor.YOUR_PRINTER_ENTITY_ams_1_tray_4
+    entity_id: sensor.p2s_22e8aj592301504_ams_1_tray_4
     attribute: color
     on_value:
       then:
@@ -570,7 +645,7 @@ font:
     glyphs: [
       "\U000F1487",  # mdi-printer-3d (chamber)
       "\U000F0E5B",  # mdi-printer-3d-nozzle-outline (hotend)
-      "\U000F08A4",  # mdi-bed-queen-outline (bed)
+      "\U000F185B",  # mdi-radiator (bed - better icon)
     ]
 
 lvgl:
@@ -595,8 +670,9 @@ lvgl:
             border_width: 0
             pad_all: 0
             scrollbar_mode: "OFF"
+            scroll_dir: NONE  # Disable swiping!
             widgets:
-              # Left swipe zone - previous page
+              # Left tap zone - backup navigation (NO SWIPING)
               - obj:
                   x: 0
                   y: 0
@@ -607,7 +683,7 @@ lvgl:
                   clickable: true
                   on_press:
                     - lvgl.page.previous:
-              # Right swipe zone - next page
+              # Right tap zone - backup navigation (NO SWIPING)
               - obj:
                   x: 120
                   y: 0
@@ -619,8 +695,9 @@ lvgl:
                   on_press:
                     - lvgl.page.next:
               
-              # BED CARD - Blue
+              # BED CARD - Blue (tap to go to previous page)
               - obj:
+                  id: bed_card
                   align: CENTER
                   x: -70
                   y: 0
@@ -631,12 +708,15 @@ lvgl:
                   border_width: 0
                   radius: 8
                   scrollbar_mode: "OFF"
+                  clickable: true
+                  on_press:
+                    - lvgl.page.previous:
                   widgets:
-                    # Bed icon
+                    # Bed icon (updated to better looking icon)
                     - label:
                         align: CENTER
                         y: -35
-                        text: "\U000F08A4"
+                        text: "\U000F185B"
                         text_font: icons_40
                         text_color: 0xFFFFFF
                     - label:
@@ -687,8 +767,9 @@ lvgl:
                         text_color: 0xFFFFFF
                         text: "--"
               
-              # CHAMBER CARD - Green
+              # CHAMBER CARD - Green (tap to go to next page)
               - obj:
+                  id: chamber_card
                   align: CENTER
                   x: 70
                   y: 0
@@ -699,6 +780,9 @@ lvgl:
                   border_width: 0
                   radius: 8
                   scrollbar_mode: "OFF"
+                  clickable: true
+                  on_press:
+                    - lvgl.page.next:
                   widgets:
                     # Chamber icon
                     - label:
@@ -751,8 +835,9 @@ lvgl:
             bg_opa: COVER
             border_width: 0
             scrollbar_mode: "OFF"
+            scroll_dir: NONE  # Disable swiping!
             widgets:
-              # Left swipe zone - previous page
+              # Left tap zone - previous page (NO SWIPING)
               - obj:
                   x: 0
                   y: 0
@@ -763,7 +848,7 @@ lvgl:
                   clickable: true
                   on_press:
                     - lvgl.page.previous:
-              # Right swipe zone - next page
+              # Right tap zone - next page (NO SWIPING)
               - obj:
                   x: 120
                   y: 0
@@ -774,73 +859,29 @@ lvgl:
                   clickable: true
                   on_press:
                     - lvgl.page.next:
-              # Background arc - gray track (indicator hidden, only shows background)
+              # Single progress arc with dynamic color (like reference implementation)
               - arc:
-                  id: progress_arc_bg
+                  id: progress_arc
                   align: CENTER
                   y: -5
                   height: 200
                   width: 200
+                  min_value: 0
+                  max_value: 100
                   value: 0
                   start_angle: 135
                   end_angle: 45
                   rotation: 0
-                  arc_color: 0x333333
                   arc_width: 18
+                  arc_color: 0x333333  # Background track
                   arc_rounded: true
                   adjustable: false
                   bg_opa: TRANSP
-              # Progress arc - dynamic color
-              # White arc for printing (< 100%)
-              - arc:
-                  id: progress_arc_white
-                  align: CENTER
-                  y: -5
-                  height: 200
-                  width: 200
-                  value: 0
-                  start_angle: 135
-                  end_angle: 45
-                  rotation: 0
-                  arc_color: 0xFFFFFF
-                  arc_width: 18
-                  arc_rounded: true
-                  adjustable: false
-                  bg_opa: TRANSP
-              # Green arc for 100% complete (bed still hot >= 46)
-              - arc:
-                  id: progress_arc_green
-                  align: CENTER
-                  y: -5
-                  height: 200
-                  width: 200
-                  value: 0
-                  start_angle: 135
-                  end_angle: 45
-                  rotation: 0
-                  arc_color: 0x00bb2c
-                  arc_width: 18
-                  arc_rounded: true
-                  adjustable: false
-                  bg_opa: TRANSP
-                  hidden: true
-              # Blue arc for 100% complete (bed cooled < 46)
-              - arc:
-                  id: progress_arc_blue
-                  align: CENTER
-                  y: -5
-                  height: 200
-                  width: 200
-                  value: 0
-                  start_angle: 135
-                  end_angle: 45
-                  rotation: 0
-                  arc_color: 0x4A90E2
-                  arc_width: 18
-                  arc_rounded: true
-                  adjustable: false
-                  bg_opa: TRANSP
-                  hidden: true
+                  border_opa: TRANSP
+                  indicator:
+                    arc_width: 18
+                    arc_color: 0xFFFFFF  # Default white, changed dynamically
+                    arc_rounded: true
               - label:
                   id: progress_label
                   align: CENTER
@@ -880,8 +921,9 @@ lvgl:
             bg_opa: COVER
             border_width: 0
             scrollbar_mode: "OFF"
+            scroll_dir: NONE  # Disable swiping!
             widgets:
-              # Left swipe zone - previous page
+              # Left tap zone - previous page (NO SWIPING)
               - obj:
                   x: 0
                   y: 0
@@ -892,7 +934,7 @@ lvgl:
                   clickable: true
                   on_press:
                     - lvgl.page.previous:
-              # Right swipe zone - next page
+              # Right tap zone - next page (NO SWIPING)
               - obj:
                   x: 120
                   y: 0
@@ -1038,46 +1080,25 @@ lvgl:
             bg_opa: COVER
             border_width: 0
             scrollbar_mode: "OFF"
+            scroll_dir: NONE  # Disable swiping!
             widgets:
-              # Left swipe zone - TOP HALF ONLY (avoid buttons)
+              # Left tap zone - FULL HEIGHT (NO SWIPING)
               - obj:
                   x: 0
                   y: 0
-                  width: 120
-                  height: 100
+                  width: 80
+                  height: 240
                   bg_opa: TRANSP
                   border_width: 0
                   clickable: true
                   on_press:
                     - lvgl.page.previous:
-              # Right swipe zone - TOP HALF ONLY (avoid buttons)
+              # Right tap zone - FULL HEIGHT (NO SWIPING)
               - obj:
-                  x: 120
+                  x: 160
                   y: 0
-                  width: 120
-                  height: 100
-                  bg_opa: TRANSP
-                  border_width: 0
-                  clickable: true
-                  on_press:
-                    - lvgl.page.next:
-              # Left swipe zone - BOTTOM (below buttons)
-              - obj:
-                  x: 0
-                  y: 140
-                  width: 120
-                  height: 100
-                  bg_opa: TRANSP
-                  border_width: 0
-                  clickable: true
-                  on_press:
-                    - lvgl.page.previous:
-              # Right swipe zone - BOTTOM (below buttons)
-              - obj:
-                  x: 120
-                  y: 140
-                  width: 120
-                  height: 100
+                  width: 80
+                  height: 240
                   bg_opa: TRANSP
                   border_width: 0
                   clickable: true
@@ -1096,11 +1117,11 @@ lvgl:
                   text: "40%"
                   text_font: font_large
                   text_color: 0x4A90E2
-              # Minus button
+              # Minus button (top, centered horizontally)
               - obj:
                   align: CENTER
-                  x: -50
-                  y: 40
+                  x: 0
+                  y: 10
                   width: 60
                   height: 60
                   bg_color: 0x333333
@@ -1118,11 +1139,11 @@ lvgl:
                         text: "-"
                         text_font: font_large
                         text_color: 0xFFFFFF
-              # Plus button
+              # Plus button (bottom, centered horizontally)
               - obj:
                   align: CENTER
-                  x: 50
-                  y: 40
+                  x: 0
+                  y: 75
                   width: 60
                   height: 60
                   bg_color: 0x333333
