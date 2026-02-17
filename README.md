@@ -119,7 +119,9 @@ Touch (I2C):   SDA=6, SCL=7, INT=5, RST=13
 Backlight:     PWM=2
 
 
-## Inspiration
+## Credit and Inspriration
+
+Credit for the original case design goes to SqueakyRobot on Makerworld - https://makerworld.com/en/models/877451
 
 Inspired by WLED printer status strip project - https://makerworld.com/en/models/2172105
 
