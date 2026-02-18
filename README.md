@@ -52,7 +52,7 @@ Settings → Devices & Services → Add Integration → "Bambu Lab"
 ### Step 3: Install ESPHome
 Settings → Apps → Install App → "ESPHome Device Builder" → Install (recommend adding this to your left menu when installing for easy access)
 
-### Step 4: Flash Your Device
+### Step 4: Flash Your Device + Connect to HA
 1. Download 'bambu-dashboard-final.yaml'
 2. Configuration - 
 Replace 'YOUR_PRINTER_ENTITY' with your printer's entity from Home Assistant. 
@@ -64,7 +64,9 @@ wifi_password: "YOUR WIFI PASSWORD"
 5. Once done compiling, choose the "Factory" option and save the .bin file - my browser didn't seem to like the file to I had to click "Keep" each time so remember that
 6. Once you have the .bin file, install drivers from CH343SER.zip file and restart PC then go to https://web.esphome.io/ 
 7. While holding the "Boot" button on the back of ESP32, plug device into your PC and click on "Connect" - you should now see your device show up, and click "Install" and choose the Factory option and then choose the .bin file downloaded
-8. Click the "Reset" button after boot and you should see the device working!
+8. Click the "Reset" button after boot and you should see the device working (no data yet)
+9. Go to Home Assistant > Settings > Devices & services - you should now see the new ESPHome device in here - add this to your account
+10. Reset device using button and it should restart and stream data!
 
 
 
